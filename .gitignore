@@ -1,0 +1,8 @@
+# Ignore all files in the "data" directory
+data/*
+
+# Ignore all pptx files
+*.pptx 
+
+__pycache__/
+*.py[cod]

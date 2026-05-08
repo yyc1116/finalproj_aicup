@@ -1,0 +1,145 @@
+Please first read AGENTS.md, then follow the task requirements below.
+
+我正在做一個桌球時序資料預測競賽。請幫我在目前 repo 中實作一個 AutoML baseline。
+
+資料格式如下：
+
+train.csv / train_mini.csv 欄位：
+- rally_uid
+- sex
+- match
+- numberGame
+- rally_id
+- strikeNumber
+- scoreSelf
+- scoreOther
+- serverGetPoint
+- gamePlayerId
+- gamePlayerOtherId
+- strikeId
+- handId
+- strengthId
+- spinId
+- pointId
+- actionId
+- positionId
+
+test_new.csv 欄位：
+- 與 train 類似，但沒有 serverGetPoint
+
+sample_submission.csv 欄位：
+- rally_uid
+- actionId
+- pointId
+- serverGetPoint
+
+任務：
+對 test_new.csv 中每個 rally_uid，根據該 rally 已知的前面擊球序列，預測：
+1. 下一拍 actionId
+2. 下一拍 pointId
+3. 該 rally 的 serverGetPoint
+
+重要資料語意：
+- pointId = 0 是合法類別，代表「無」或「未落在九宮格的位置」，例如掛網、出界、直接出界。
+- pointId 的九宮格位置是以接球方 player 的慣用手視角定義，也就是正手/反手視角，不是單純球桌左右座標。
+- actionId = 0 是合法類別，代表「無」或「其他 / 無法判斷球種」。
+- serverGetPoint 是二分類目標。發球者是否得分（1=是, 0=否）
+
+請建立以下檔案：
+
+1. src/features.py
+   - 實作 build_train_features(df, k)
+   - 實作 build_test_features(df, k)
+   - 將 stroke-level data 轉成 tabular features
+   - 依照 rally_uid 分組，並依 strikeNumber 排序
+   - 使用每個 prefix 的最後 k 拍作為 lag features
+   - 對 train：
+     - 對於同一個 rally 中的第 t 拍，使用第 1 到第 t 拍，或最後 k 拍，預測第 t+1 拍
+     - target_actionId = 下一拍 actionId
+     - target_pointId = 下一拍 pointId
+     - target_serverGetPoint = 同一個 rally 的 serverGetPoint
+     - 最後一拍沒有下一拍，因此不能用來訓練 actionId / pointId
+   - 對 test：
+     - 每個 rally_uid 只產生一筆 features
+     - 使用該 rally_uid 已知的完整序列，或最後 k 拍，預測下一拍與 rally 結果
+   - lag feature 命名例如：
+     - prev1_actionId, prev1_pointId, prev1_spinId, ...
+     - prev2_actionId, prev2_pointId, prev2_spinId, ...
+   - 不足 k 拍的地方補 0
+   - 保留目前狀態特徵，例如：
+     - sex
+     - match
+     - numberGame
+     - rally_id
+     - current_strikeNumber
+     - current_scoreSelf
+     - current_scoreOther
+     - rally_len_so_far
+   - 加入一些簡單統計特徵：
+     - 前 k 拍 actionId 的 nunique
+     - 前 k 拍 pointId 的 nunique
+     - 前 k 拍 actionId=0 的次數
+     - 前 k 拍 pointId=0 的次數
+     - 前 k 拍平均 strengthId
+     - 前 k 拍最後一位擊球者 gamePlayerId
+     - 前 k 拍最後一位對手 gamePlayerOtherId
+
+2. src/train_automl.py
+   - 使用 AutoGluon TabularPredictor 訓練三個模型：
+     - models/action：預測 target_actionId，problem_type="multiclass"，eval_metric="f1_macro"
+     - models/point：預測 target_pointId，problem_type="multiclass"，eval_metric="f1_macro"
+     - models/win：預測 target_serverGetPoint，problem_type="binary"，eval_metric="roc_auc"
+   - CLI 參數：
+     - --train-path，預設 data/train.csv
+     - --model-dir，預設 models/automl
+     - --k，預設 5
+     - --time-limit，預設 600
+     - --presets，預設 medium_quality
+   - validation split：
+     - 優先用 match 做 group split，避免同一場比賽同時出現在 train/valid
+     - 如果 match 不可用，改用 rally_uid 做 group split
+     - 不要直接 random row split
+   - 訓練三個 predictor 時，請避免把其他 target 欄位留在 feature 中，避免 leakage
+   - 訓練完成後，輸出每個 predictor 的 leaderboard 到：
+     - models/automl/action_leaderboard.csv
+     - models/automl/point_leaderboard.csv
+     - models/automl/win_leaderboard.csv
+
+3. src/predict_submission.py
+   - 載入 models/automl 下三個 AutoGluon predictor
+   - 讀取 test_new.csv
+   - 使用 build_test_features(df, k) 對每個 rally_uid 產生一筆 features
+   - 預測：
+     - actionId：使用 action predictor 的 predict()
+     - pointId：使用 point predictor 的 predict()
+     - serverGetPoint：使用 win predictor 的 predict_proba()，取 class 1 的 probability
+   - 輸出 submission.csv，欄位順序必須完全為：
+     - rally_uid
+     - actionId
+     - pointId
+     - serverGetPoint
+   - submission.csv 必須每個 test rally_uid 一列
+   - rally_uid 順序請按照 test_new.csv 中第一次出現的順序
+   - actionId 和 pointId 請輸出整數類別
+   - serverGetPoint 請輸出 float probability
+
+4. requirements.txt 或 pyproject.toml
+   - 加入必要套件：
+     - pandas
+     - scikit-learn
+     - autogluon.tabular
+
+請加入可執行範例：
+
+訓練：
+python src/train_automl.py --train-path data/train.csv --model-dir models/automl --k 5 --time-limit 600
+
+產生提交檔：
+python src/predict_submission.py --test-path data/test_new.csv --model-dir models/automl --k 5 --out-path submission.csv
+
+請注意：
+- 不要把 actionId=0 或 pointId=0 當作 NaN。
+- 不要使用第 t+1 拍的資訊預測第 t+1 拍。
+- 不要讓 target_actionId、target_pointId、target_serverGetPoint 洩漏到其他模型的 features。
+- test_new.csv 沒有 serverGetPoint，所以 predict script 不可以依賴這個欄位。
+- 程式要有清楚的 argparse、錯誤訊息、註解，並能直接從命令列執行。
